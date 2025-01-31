@@ -1,13 +1,13 @@
 
-# EVA-Perceiver: Efficient Open-Vocabulary Foundation Models for Object Perception
+# Troy-VIS: Towards Real-Time Open-Vocabulary Video Instance Segmentation
 
 *This is not an officially supported Google product.*
 
 ## Highlight:
 
-- EVA-Perceiver is the first **efficient foundation model** family for **open-vocabulary** object perception. It can detect and segment objects of any class in images and track objects of any class in videos.
-- EVA-Perceiver can do open-vocabulary video instance segmentation of more than 1K object categories in **real-time** on A100 GPUs. 
-- EVA-Perceiver is trained on huge amount of images and videos from different domains, showing strong **zero-shot** perception ability.
+- Troy-VIS is the first **efficient foundation model** family for **open-vocabulary** object perception. It can detect and segment objects of any class in images and track objects of any class in videos.
+- Troy-VIS can do open-vocabulary video instance segmentation of more than 1K object categories in **real-time** on A100 GPUs. 
+- Troy-VIS is trained on huge amount of images and videos from different domains, showing strong **zero-shot** perception ability.
 
 
 ## Getting started
