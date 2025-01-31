@@ -1,0 +1,36 @@
+# baseline_new: w3, efficient early fusion, efficient level 3
+_BASE_: "base_clip_frozen_image_R50.yaml"
+FIND_UNUSED_PARAMETERS: False
+MODEL:
+  WEIGHTS: "weights/converted_maskdino_r50_withoutclip.pth"
+  VISUAL_PROMPT: False
+  EARLYFUSION: True
+  EFFI_EARLY_FUSION: True
+  EFFI_LVL: 3
+  LANGUAGE_BACKBONE:
+    LANG_DIM: 768
+  TEXT:
+    ARCH: EVA02_L_CLIP_frozen # frozen
+DATASETS:
+  TRAIN: ("openimage_train", "objects365_v2_train", )
+  TEST: ("objects365_v2_val",)  
+SOLVER:  
+  IMS_PER_BATCH: 32
+  BASE_LR: 0.0001
+  STEPS: (80000, )
+  WARMUP_ITERS: 1000
+  MAX_ITER: 100000
+  CHECKPOINT_PERIOD: 10000
+  TEXTENCODER_MULTIPLIER: 0.1
+TEST:
+  EVAL_PERIOD: 0
+DATALOADER:
+  SAMPLER_TRAIN: "MultiDatasetSampler"
+  DATASET_RATIO: [3, 3]
+  USE_DIFF_BS_SIZE: True
+  DATASET_BS: [2, 2]
+  USE_RFS: [True, True]
+  DATASET_ANN: ['box', 'box']
+  FILTER_EMPTY_ANNOTATIONS: True
+  NUM_WORKERS: 2
+OUTPUT_DIR: ./exp/GLEE_Lite_CLIPfrozen_pretrain_baseline_new_16g_evaclipl
