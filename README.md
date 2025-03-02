@@ -1,6 +1,25 @@
 
 # Troy-VIS: Towards Real-Time Open-Vocabulary Video Instance Segmentation
 
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/fishes.gif" alt="fishes.gif" width="100%">
+    </td>
+    <td width="50%">
+      <img src="assets/wolf.gif" alt="wolf.gif" width="100%">
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/akkordion.gif" alt="akkordion.gif" width="100%">
+    </td>
+    <td width="50%">
+      <img src="assets/donkey.gif" alt="donkey.gif" width="100%">
+    </td>
+  </tr>
+</table>
+
 *This is not an officially supported Google product.*
 
 ## Highlight:
