@@ -4,7 +4,7 @@
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/fishes.gif" alt="fishes.gif" width="100%">
+      <img src="assets/fish.gif" alt="fishes.gif" width="100%">
     </td>
     <td width="50%">
       <img src="assets/wolf.gif" alt="wolf.gif" width="100%">
