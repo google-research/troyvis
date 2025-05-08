@@ -130,7 +130,7 @@ def reset_bn(
             m.running_var.data[:feature_dim].copy_(bn_var[name].avg)
 
 
-def set_norm_eps(model: nn.Module, eps: float or None = None) -> None:
+def set_norm_eps(model: nn.Module, eps: float | None = None) -> None:
     for m in model.modules():
         if isinstance(m, (nn.GroupNorm, nn.LayerNorm, _BatchNorm)):
             if eps is not None:
