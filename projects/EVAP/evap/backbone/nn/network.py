@@ -33,7 +33,7 @@ def get_device(model: nn.Module) -> torch.device:
     return model.parameters().__next__().device
 
 
-def get_same_padding(kernel_size: int or tuple[int, ...]) -> int or tuple[int, ...]:
+def get_same_padding(kernel_size: int | tuple[int, ...]) -> int | tuple[int, ...]:
     if isinstance(kernel_size, tuple):
         return tuple([get_same_padding(ks) for ks in kernel_size])
     else:
@@ -43,10 +43,10 @@ def get_same_padding(kernel_size: int or tuple[int, ...]) -> int or tuple[int, .
 
 def resize(
     x: torch.Tensor,
-    size: any or None = None,
-    scale_factor: list[float] or None = None,
+    size: any | None = None,
+    scale_factor: list[float] | None = None,
     mode: str = "bicubic",
-    align_corners: bool or None = False,
+    align_corners: bool | None = False,
 ) -> torch.Tensor:
     if mode in {"bilinear", "bicubic"}:
         return F.interpolate(
@@ -78,13 +78,13 @@ def load_state_dict_from_file(file: str, only_state_dict=True) -> dict[str, torc
         checkpoint = checkpoint["state_dict"]
     return checkpoint
 
-def val2list(x: list or tuple or any, repeat_time=1) -> list:
+def val2list(x: list | tuple | any, repeat_time=1) -> list:
     if isinstance(x, (list, tuple)):
         return list(x)
     return [x for _ in range(repeat_time)]
 
 
-def val2tuple(x: list or tuple or any, min_len: int = 1, idx_repeat: int = -1) -> tuple:
+def val2tuple(x: list | tuple | any, min_len: int = 1, idx_repeat: int = -1) -> tuple:
     x = val2list(x)
 
     # repeat elements if necessary

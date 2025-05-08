@@ -28,7 +28,7 @@ REGISTERED_NORM_DICT: dict[str, type] = {
 }
 
 
-def build_norm(name="bn2d", num_features=None, **kwargs) -> nn.Module or None:
+def build_norm(name="bn2d", num_features=None, **kwargs) -> nn.Module | None:
     if name in ["ln", "ln2d"]:
         kwargs["normalized_shape"] = num_features
     else:

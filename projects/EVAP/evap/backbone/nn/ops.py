@@ -81,7 +81,7 @@ class UpSampleLayer(nn.Module):
     def __init__(
         self,
         mode="bicubic",
-        size: int or tuple[int, int] or list[int] or None = None,
+        size: int | tuple[int, int] | list[int] | None = None,
         factor=2,
         align_corners=False,
     ):
@@ -339,7 +339,7 @@ class LiteMLA(nn.Module):
         self,
         in_channels: int,
         out_channels: int,
-        heads: int or None = None,
+        heads: int | None = None,
         heads_ratio: float = 1.0,
         dim=8,
         use_bias=False,
@@ -532,10 +532,10 @@ class EfficientViTBlock(nn.Module):
 class ResidualBlock(nn.Module):
     def __init__(
         self,
-        main: nn.Module or None,
-        shortcut: nn.Module or None,
+        main: nn.Module | None,
+        shortcut: nn.Module | None,
         post_act=None,
-        pre_norm: nn.Module or None = None,
+        pre_norm: nn.Module | None = None,
     ):
         super(ResidualBlock, self).__init__()
 
@@ -567,7 +567,7 @@ class DAGBlock(nn.Module):
         self,
         inputs: dict[str, nn.Module],
         merge: str,
-        post_input: nn.Module or None,
+        post_input: nn.Module | None,
         middle: nn.Module,
         outputs: dict[str, nn.Module],
     ):
@@ -600,7 +600,7 @@ class DAGBlock(nn.Module):
 
 
 class OpSequential(nn.Module):
-    def __init__(self, op_list: list[nn.Module or None]):
+    def __init__(self, op_list: list[nn.Module | None]):
         super(OpSequential, self).__init__()
         valid_op_list = []
         for op in op_list:

@@ -16,7 +16,7 @@ class Scheduler:
     PROGRESS = 0
 
 
-def apply_drop_func(network: nn.Module, drop_config: dict[str, any] or None) -> None:
+def apply_drop_func(network: nn.Module, drop_config: dict[str, any] | None) -> None:
     if drop_config is None:
         return
 
@@ -60,9 +60,9 @@ class DropPathResidualBlock(ResidualBlock):
     def __init__(
         self,
         main: nn.Module,
-        shortcut: nn.Module or None,
+        shortcut: nn.Module | None,
         post_act=None,
-        pre_norm: nn.Module or None = None,
+        pre_norm: nn.Module | None = None,
         ######################################
         drop_prob: float = 0,
         scheduled=True,
