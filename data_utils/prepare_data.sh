@@ -2,7 +2,7 @@ gcloud config set storage/parallel_composite_upload_enabled True
 mkdir -p datasets
 {
     # COCO
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/COCO datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/COCO datasets/
     mv datasets/COCO datasets/coco
     cd datasets/coco
     unzip -qq annotations_trainval2017.zip; rm annotations_trainval2017.zip
@@ -13,7 +13,7 @@ mkdir -p datasets
 } &
 {
     # LVIS
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/LVIS datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/LVIS datasets/
     mv datasets/LVIS datasets/lvis
     cd datasets/lvis
     unzip -qq lvis_v1_train.json.zip; rm lvis_v1_train.json.zip
@@ -23,7 +23,7 @@ mkdir -p datasets
 } &
 {
     # VG
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/visual_genome datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/visual_genome datasets/
     cd datasets/visual_genome
     mkdir -p annotations
     mv *.json annotations
@@ -37,7 +37,7 @@ mkdir -p datasets
 } &
 {
     # VIS19
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/ytvis_2019 datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/ytvis_2019 datasets/
     cd datasets/ytvis_2019
     unzip -qq train.zip; rm -rf train.zip
     mkdir annotations
@@ -48,7 +48,7 @@ mkdir -p datasets
 } &
 {
     # VIS21
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/ytvis_2021 datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/ytvis_2021 datasets/
     cd datasets/ytvis_2021
     unzip -qq train.zip; rm -rf train.zip
     mkdir annotations
@@ -59,7 +59,7 @@ mkdir -p datasets
 } &
 {
     # OVIS
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/ovis datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/ovis datasets/
     cd datasets/ovis
     unzip -qq train.zip; rm -rf train.zip
     cd ../..
@@ -67,7 +67,7 @@ mkdir -p datasets
 } &
 {
     # LV-VIS
-    gsutil -m cp -r gs://xcloud-shared/masterbin/datasets/lvvis datasets/
+    gcloud storage cp --recursive gs://xcloud-shared/masterbin/datasets/lvvis datasets/
     cd datasets/lvvis
     unzip -qq val.zip; rm val.zip
     mv val_instances_.json val_instances.json
