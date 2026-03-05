@@ -259,13 +259,13 @@ def main(args):
         local_folder = f'/home/jupyter/code/eva-perceiver/exp/{dir_name}'
         last_ckpt_server = server_folder + "/last_checkpoint"
         last_ckpt_local = local_folder + "/last_checkpoint"
-        os.system(f"gsutil -m cp {last_ckpt_server} {last_ckpt_local}")
+        os.system(f"gcloud storage cp {last_ckpt_server} {last_ckpt_local}")
         if os.path.exists(last_ckpt_local):
             with open(last_ckpt_local, "r") as f:
                 ckpt_name = f.readlines()[0].strip()
             ckpt_path_server = server_folder + f"/{ckpt_name}"
             ckpt_path_local = local_folder + f"/{ckpt_name}"
-            os.system(f"gsutil -m cp {ckpt_path_server} {ckpt_path_local}")
+            os.system(f"gcloud storage cp {ckpt_path_server} {ckpt_path_local}")
     comm.synchronize()
     if args.eval_only:
         model = Trainer.build_model(cfg)

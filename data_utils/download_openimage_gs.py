@@ -10,7 +10,7 @@ from pathlib import Path
 def download_unzip_tar(tar_url):
     tar_name = os.path.split(tar_url)[-1]
     # download
-    os.system(f"gsutil -m cp {tar_url} {data_root}")
+    os.system(f"gcloud storage cp {tar_url} {data_root}")
     # unzip
     tar_path = os.path.join(data_root, tar_name)
     os.system(f"unzip -qq {tar_path} -d {data_dir}")
@@ -36,7 +36,7 @@ if __name__ == "__main__":
     # download annotations
     anno_root = "datasets/openimages"
     train_anno_url = f'gs://xcloud-shared/masterbin/datasets/openimages/openimages_v6_train_bbox.json'
-    os.system(f"gsutil -m cp {train_anno_url} {anno_root}")
+    os.system(f"gcloud storage cp {train_anno_url} {anno_root}")
     end_time = time.time()
     total_time_mins = (end_time - start_time) / 60
     print("Total Time: %01d mins" % total_time_mins)

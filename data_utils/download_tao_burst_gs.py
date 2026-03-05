@@ -12,7 +12,7 @@ def download_unzip_tar(tar_url):
     # download
     while True:
         if not os.path.exists(tar_path):
-            os.system(f"gsutil -m cp {tar_url} {data_dir}")
+            os.system(f"gcloud storage cp {tar_url} {data_dir}")
         else:
             break
     # unzip
@@ -39,7 +39,7 @@ if __name__ == "__main__":
 
     # download annotations
     train_anno_url = f'gs://xcloud-shared/masterbin/datasets/TAO/burst_annotations'
-    os.system(f"gsutil -m cp -r {train_anno_url} {data_root}")
+    os.system(f"gcloud storage cp --recursive {train_anno_url} {data_root}")
     end_time = time.time()
     total_time_mins = (end_time - start_time) / 60
     print("Total Time: %01d mins" % total_time_mins)

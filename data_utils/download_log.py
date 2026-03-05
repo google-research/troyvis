@@ -18,4 +18,4 @@ if __name__ == "__main__":
         os.makedirs(local_folder)
     last_ckpt_server = server_folder + "/log.txt"
     last_ckpt_local = local_folder + "/log.txt"
-    os.system(f"gsutil -m cp {last_ckpt_server} {last_ckpt_local}")
+    os.system(f"gcloud storage cp {last_ckpt_server} {last_ckpt_local}")
