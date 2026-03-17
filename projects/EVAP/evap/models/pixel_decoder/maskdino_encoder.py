@@ -23,6 +23,7 @@ from .position_encoding import PositionEmbeddingSine
 from ...utils.utils import _get_clones, _get_clones_advanced, _get_activation_fn
 from ops.modules import MSDeformAttn
 from .early_fusion import VLFuse
+from ...quantization import build_activation_quantizer, build_attention_quantizer, build_quant_config
 
 import time
 
@@ -46,17 +47,19 @@ class MSDeformAttnTransformerEncoderOnly(nn.Module):
     def __init__(self, d_model=256, nhead=8,
                  num_encoder_layers=6, dim_feedforward=1024, dropout=0.1,
                  activation="relu",
-                 num_feature_levels=4, enc_n_points=4, early_fusion=True, effi_early_fusion=False, effi_lvl=1):
+                 num_feature_levels=4, enc_n_points=4, early_fusion=True, effi_early_fusion=False, effi_lvl=1,
+                 quant_cfg=None):
         super().__init__()
 
         self.d_model = d_model
         self.nhead = nhead
 
-        vl_fusion_layer = VLFuse()
+        vl_fusion_layer = VLFuse(quant_cfg=quant_cfg)
 
         encoder_layer = MSDeformAttnTransformerEncoderLayer(d_model, dim_feedforward,
                                                             dropout, activation,
-                                                            num_feature_levels, nhead, enc_n_points)
+                                                            num_feature_levels, nhead, enc_n_points,
+                                                            quant_cfg=quant_cfg)
         self.encoder = MSDeformAttnTransformerEncoder(vl_fusion_layer, encoder_layer, num_encoder_layers, early_fusion, effi_early_fusion, effi_lvl)
 
         self.level_embed = nn.Parameter(torch.Tensor(num_feature_levels, d_model))
@@ -122,7 +125,8 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
     def __init__(self,
                  d_model=256, d_ffn=1024,
                  dropout=0.1, activation="relu",
-                 n_levels=4, n_heads=8, n_points=4):
+                 n_levels=4, n_heads=8, n_points=4,
+                 quant_cfg=None):
         super().__init__()
 
         # self attention
@@ -137,22 +141,44 @@ class MSDeformAttnTransformerEncoderLayer(nn.Module):
         self.linear2 = nn.Linear(d_ffn, d_model)
         self.dropout3 = nn.Dropout(dropout)
         self.norm2 = nn.LayerNorm(d_model)
+        self.activation_quant = build_activation_quantizer(quant_cfg, channel_axis=-1)
+        # MSDeformAttn does not expose per-head tensors directly in Python, so this
+        # quantizes the visible attention path tensors per feature as a first-pass approximation.
+        self.attention_quant = build_attention_quantizer(quant_cfg, channel_axis=-1)
 
     @staticmethod
     def with_pos_embed(tensor, pos):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, src):
-        src2 = self.linear2(self.dropout2(self.activation(self.linear1(src))))
+        if self.activation_quant is not None:
+            src = self.activation_quant(src)
+        src2 = self.linear1(src)
+        src2 = self.activation(src2)
+        if self.activation_quant is not None:
+            src2 = self.activation_quant(src2)
+        src2 = self.linear2(self.dropout2(src2))
         src = src + self.dropout3(src2)
         src = self.norm2(src)
+        if self.activation_quant is not None:
+            src = self.activation_quant(src)
         return src
 
     def forward(self, src, pos, reference_points, spatial_shapes, level_start_index, padding_mask=None):
         # self attention
-        src2 = self.self_attn(self.with_pos_embed(src, pos), reference_points, src, spatial_shapes, level_start_index, padding_mask)
+        src_attn = self.with_pos_embed(src, pos)
+        if self.attention_quant is not None:
+            src_attn = self.attention_quant(src_attn)
+            src_value = self.attention_quant(src)
+        else:
+            src_value = src
+        src2 = self.self_attn(src_attn, reference_points, src_value, spatial_shapes, level_start_index, padding_mask)
+        if self.attention_quant is not None:
+            src2 = self.attention_quant(src2)
         src = src + self.dropout1(src2)
         src = self.norm1(src)
+        if self.activation_quant is not None:
+            src = self.activation_quant(src)
 
         # ffn
         src = self.forward_ffn(src)
@@ -251,7 +277,8 @@ class MaskDINOEncoder(nn.Module):
         ViTBackbone: bool,
         early_fusion: bool,
         effi_early_fusion: bool,
-        effi_lvl: int
+        effi_lvl: int,
+        quant_cfg=None,
     ):
         """
         NOTE: this interface is experimental.
@@ -332,7 +359,8 @@ class MaskDINOEncoder(nn.Module):
             num_feature_levels=self.total_num_feature_levels,
             early_fusion=early_fusion,
             effi_early_fusion=effi_early_fusion,
-            effi_lvl=effi_lvl
+            effi_lvl=effi_lvl,
+            quant_cfg=quant_cfg,
         )
         N_steps = conv_dim // 2
         self.pe_layer = PositionEmbeddingSine(N_steps, normalize=True)
@@ -408,6 +436,7 @@ class MaskDINOEncoder(nn.Module):
         ret["early_fusion"] = cfg.MODEL.EARLYFUSION
         ret["effi_early_fusion"] = cfg.MODEL.EFFI_EARLY_FUSION
         ret["effi_lvl"] = cfg.MODEL.EFFI_LVL
+        ret["quant_cfg"] = build_quant_config(cfg)
         return ret
 
     @autocast(enabled=False)

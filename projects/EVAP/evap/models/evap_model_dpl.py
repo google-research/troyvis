@@ -27,6 +27,12 @@ from detectron2.modeling import build_backbone
 from .pixel_decoder.maskdino_encoder import build_pixel_decoder
 from .transformer_decoder.maskdino_decoder import build_transformer_decoder
 from .eva_clip import create_model, get_tokenizer
+from ..quantization import (
+    build_predictor_skip_names,
+    build_quant_config,
+    has_quant_wrappers,
+    prepare_module_for_qat,
+)
 
 
 
@@ -56,6 +62,10 @@ class EVAP_Model_DPL(nn.Module):
     def __init__(self, cfg, device, video_info, contras_mean):
         super().__init__()
         self.cfg = cfg
+        self.quant_cfg = build_quant_config(cfg)
+        self.quantization_summary = {}
+        if self.quant_cfg.enabled and not self.quant_cfg.skip_text_encoder:
+            raise NotImplementedError("This first-pass QAT baseline intentionally keeps the text encoder in FP32.")
         self.backbone = build_backbone(cfg)
          
         self.text_encode_type = cfg.MODEL.TEXT.ARCH
@@ -81,6 +91,25 @@ class EVAP_Model_DPL(nn.Module):
         self.pixel_decoder = build_pixel_decoder(cfg, self.backbone.output_shape())
         transformer_predictor_in_channels = cfg.MODEL.SEM_SEG_HEAD.CONVS_DIM
         self.predictor = build_transformer_decoder(cfg, transformer_predictor_in_channels, lang_encoder = self.lang_encoder, mask_classification=True,)
+        if self.quant_cfg.enabled:
+            self.quantization_summary["backbone"] = prepare_module_for_qat(
+                self.backbone,
+                self.quant_cfg,
+                "backbone",
+            )
+            self.quantization_summary["pixel_decoder"] = prepare_module_for_qat(
+                self.pixel_decoder,
+                self.quant_cfg,
+                "pixel_decoder",
+            )
+            self.quantization_summary["predictor"] = prepare_module_for_qat(
+                self.predictor,
+                self.quant_cfg,
+                "predictor",
+                explicit_skip=build_predictor_skip_names(self.predictor),
+            )
+            if self.quant_cfg.skip_text_encoder and hasattr(self, "text_encoder"):
+                assert not has_quant_wrappers(self.text_encoder), "Text encoder should remain FP32 when quantization skip is enabled."
         self.to(device)
         
         self.video_info = video_info

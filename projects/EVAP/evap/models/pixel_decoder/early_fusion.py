@@ -2,6 +2,7 @@ import torch
 import torch.nn.functional as F
 from torch import nn
 from timm.models.layers import DropPath
+from ...quantization import build_activation_quantizer, build_attention_quantizer
 
 
 
@@ -11,7 +12,7 @@ class VLFuse(torch.nn.Module):
     Early Fusion Module
     """
 
-    def __init__(self, ):
+    def __init__(self, quant_cfg=None):
         super(VLFuse, self).__init__()
         self.init_configs()
 
@@ -24,6 +25,7 @@ class VLFuse(torch.nn.Module):
                     dropout=0.1,
                     drop_path=.0,
                     init_values=1.0 / 6,
+                    quant_cfg=quant_cfg,
                     )
     def init_configs(self, ):
         # common params
@@ -55,7 +57,7 @@ class VLFuse(torch.nn.Module):
 
 
 class BiMultiHeadAttention(nn.Module):
-    def __init__(self, v_dim, l_dim, embed_dim, num_heads, dropout=0.1):
+    def __init__(self, v_dim, l_dim, embed_dim, num_heads, dropout=0.1, quant_cfg=None):
         super(BiMultiHeadAttention, self).__init__()
 
         self.embed_dim = embed_dim
@@ -81,8 +83,20 @@ class BiMultiHeadAttention(nn.Module):
         self.stable_softmax_2d =  False
         self.clamp_min_for_underflow = True
         self.clamp_max_for_overflow = True
+        self.activation_quant = build_activation_quantizer(quant_cfg, channel_axis=-1)
+        self.attention_quant = build_attention_quantizer(quant_cfg, channel_axis=1)
 
         self._reset_parameters()
+
+    def _quant_act(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.activation_quant is None:
+            return tensor
+        return self.activation_quant(tensor)
+
+    def _quant_attn(self, tensor: torch.Tensor) -> torch.Tensor:
+        if self.attention_quant is None:
+            return tensor
+        return self.attention_quant(tensor)
 
     def _shape(self, tensor: torch.Tensor, seq_len: int, bsz: int):
         return tensor.view(bsz, seq_len, self.num_heads, self.head_dim).transpose(1, 2).contiguous()
@@ -103,20 +117,26 @@ class BiMultiHeadAttention(nn.Module):
 
     def forward(self, v, l, attention_mask_l=None):
         bsz, tgt_len, embed_dim = v.size()
+        v = self._quant_act(v)
+        l = self._quant_act(l)
 
         query_states = self.v_proj(v) * self.scale
-        key_states = self._shape(self.l_proj(l), -1, bsz)
-        value_v_states = self._shape(self.values_v_proj(v), -1, bsz)
-        value_l_states = self._shape(self.values_l_proj(l), -1, bsz)
+        query_states = self._quant_attn(self._shape(query_states, tgt_len, bsz))
+        key_states = self._quant_attn(self._shape(self.l_proj(l), -1, bsz))
+        value_v_states = self._quant_attn(self._shape(self.values_v_proj(v), -1, bsz))
+        value_l_states = self._quant_attn(self._shape(self.values_l_proj(l), -1, bsz))
 
         proj_shape = (bsz * self.num_heads, -1, self.head_dim) # (bs * 8, -1, embed_dim//8)
-        query_states = self._shape(query_states, tgt_len, bsz).view(*proj_shape) # (bs * 8, seq_len_img, embed_dim//8)
+        query_states = query_states.view(*proj_shape) # (bs * 8, seq_len_img, embed_dim//8)
         key_states = key_states.view(*proj_shape) # (bs * 8, seq_len_text, embed_dim//8)
         value_v_states = value_v_states.view(*proj_shape)
         value_l_states = value_l_states.view(*proj_shape)
 
         src_len = key_states.size(1)
         attn_weights = torch.bmm(query_states, key_states.transpose(1, 2)) # (bs * 8, seq_len_img, seq_len_text)
+        attn_weights = self._quant_attn(attn_weights.view(bsz, self.num_heads, tgt_len, src_len)).view(
+            bsz * self.num_heads, tgt_len, src_len
+        )
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
@@ -157,6 +177,12 @@ class BiMultiHeadAttention(nn.Module):
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
 
         attn_weights_v = nn.functional.softmax(attn_weights, dim=-1)
+        attn_weights_v = self._quant_attn(attn_weights_v.view(bsz, self.num_heads, tgt_len, src_len)).view(
+            bsz * self.num_heads, tgt_len, src_len
+        )
+        attn_weights_l = self._quant_attn(attn_weights_l.view(bsz, self.num_heads, src_len, tgt_len)).view(
+            bsz * self.num_heads, src_len, tgt_len
+        )
 
         attn_probs_v = F.dropout(attn_weights_v, p=self.dropout, training=self.training)
         attn_probs_l = F.dropout(attn_weights_l, p=self.dropout, training=self.training)
@@ -176,22 +202,26 @@ class BiMultiHeadAttention(nn.Module):
             )
 
         attn_output_v = attn_output_v.view(bsz, self.num_heads, tgt_len, self.head_dim)
+        attn_output_v = self._quant_attn(attn_output_v)
         attn_output_v = attn_output_v.transpose(1, 2)
         attn_output_v = attn_output_v.reshape(bsz, tgt_len, self.embed_dim)
 
         attn_output_l = attn_output_l.view(bsz, self.num_heads, src_len, self.head_dim)
+        attn_output_l = self._quant_attn(attn_output_l)
         attn_output_l = attn_output_l.transpose(1, 2)
         attn_output_l = attn_output_l.reshape(bsz, src_len, self.embed_dim)
 
         attn_output_v = self.out_v_proj(attn_output_v)
         attn_output_l = self.out_l_proj(attn_output_l)
+        attn_output_v = self._quant_act(attn_output_v)
+        attn_output_l = self._quant_act(attn_output_l)
 
         return attn_output_v, attn_output_l
 
 
 class BiAttentionBlockForCheckpoint(nn.Module):
     def __init__(self, v_dim, l_dim, embed_dim, num_heads, dropout=0.1,
-                 drop_path=.0, init_values=1e-4,  ):
+                 drop_path=.0, init_values=1e-4, quant_cfg=None):
         """
         Inputs:
             embed_dim - Dimensionality of input and attention feature vectors
@@ -208,7 +238,9 @@ class BiAttentionBlockForCheckpoint(nn.Module):
                                          embed_dim=embed_dim,
                                          num_heads=num_heads,
                                          dropout=dropout,
+                                         quant_cfg=quant_cfg,
                                         )
+        self.activation_quant = build_activation_quantizer(quant_cfg, channel_axis=-1)
 
         # add layer scale for training stability
         self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
@@ -221,10 +253,16 @@ class BiAttentionBlockForCheckpoint(nn.Module):
         # l: language features, (bs, seq_len, 768)
         v = self.layer_norm_v(v)
         l = self.layer_norm_l(l)
+        if self.activation_quant is not None:
+            v = self.activation_quant(v)
+            l = self.activation_quant(l)
         delta_v, delta_l = self.attn(v, l, attention_mask_l=attention_mask_l)
         # v, l = v + delta_v, l + delta_l
         v = v + self.drop_path(self.gamma_v * delta_v)
         l = l + self.drop_path(self.gamma_l * delta_l)
+        if self.activation_quant is not None:
+            v = self.activation_quant(v)
+            l = self.activation_quant(l)
         return v, l
 
 

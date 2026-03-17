@@ -13,6 +13,7 @@ from torch.cuda.amp import autocast
 
 from ...utils.utils import MLP, _get_clones, _get_activation_fn, gen_sineembed_for_position, inverse_sigmoid
 from ops.modules import MSDeformAttn
+from ...quantization import build_activation_quantizer, build_attention_quantizer
 
 
 class TransformerDecoder(nn.Module):
@@ -32,6 +33,7 @@ class TransformerDecoder(nn.Module):
                  n_levels = None, 
                  n_heads = None, 
                  n_points = None,
+                 quant_cfg = None,
                  ):
         super().__init__()
         if num_layers > 0:
@@ -89,6 +91,10 @@ class TransformerDecoder(nn.Module):
             self.cross_track = True
         else:
             self.cross_track = False
+        self.activation_quant = build_activation_quantizer(quant_cfg, channel_axis=-1)
+        # MSDeformAttn does not expose per-head tensors directly here, so the
+        # decoder uses a visible-tensor approximation for the attention path.
+        self.attention_quant = build_attention_quantizer(quant_cfg, channel_axis=-1)
 
         self._reset_parameters()
 
@@ -166,6 +172,8 @@ class TransformerDecoder(nn.Module):
                 extra = extra,
                 layer_id = layer_id,
             )
+            if self.activation_quant is not None:
+                output = self.activation_quant(output)
 
             # iter update
             if self.bbox_embed is not None:
@@ -182,12 +190,27 @@ class TransformerDecoder(nn.Module):
 
 
         if self.cross_track:
-            tgt_track = self.cross_track_attn(self.with_pos_embed(output, query_pos).transpose(0, 1),
-                               reference_points_input.transpose(0, 1).contiguous(),
-                               memory.transpose(0, 1), spatial_shapes, level_start_index,
-                               memory_key_padding_mask).transpose(0, 1)
+            track_query = self.with_pos_embed(output, query_pos).transpose(0, 1)
+            track_reference = reference_points_input.transpose(0, 1).contiguous()
+            track_memory = memory.transpose(0, 1)
+            if self.attention_quant is not None:
+                track_query = self.attention_quant(track_query)
+                track_reference = self.attention_quant(track_reference)
+                track_memory = self.attention_quant(track_memory)
+            tgt_track = self.cross_track_attn(
+                track_query,
+                track_reference,
+                track_memory,
+                spatial_shapes,
+                level_start_index,
+                memory_key_padding_mask,
+            ).transpose(0, 1)
+            if self.attention_quant is not None:
+                tgt_track = self.attention_quant(tgt_track)
             tgt_track = tgt_track + output
             tgt_track = tgt_track.transpose(0, 1)
+            if self.activation_quant is not None:
+                tgt_track = self.activation_quant(tgt_track)
         else:
             tgt_track = None
 
@@ -204,6 +227,7 @@ class DeformableTransformerDecoderLayer(nn.Module):
                  n_levels=4, n_heads=8, n_points=4,
                  use_deformable_box_attn=False,
                  key_aware_type=None,
+                 quant_cfg=None,
                  ):
         super().__init__()
         self.n_heads = n_heads
@@ -230,6 +254,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
 
         self.key_aware_type = key_aware_type
         self.key_aware_proj = None
+        self.activation_quant = build_activation_quantizer(quant_cfg, channel_axis=-1)
+        self.attention_quant = build_attention_quantizer(quant_cfg, channel_axis=-1)
 
     def rm_self_attn_modules(self):
         self.self_attn = None
@@ -241,9 +267,17 @@ class DeformableTransformerDecoderLayer(nn.Module):
         return tensor if pos is None else tensor + pos
 
     def forward_ffn(self, tgt):
-        tgt2 = self.linear2(self.dropout3(self.activation(self.linear1(tgt))))
+        if self.activation_quant is not None:
+            tgt = self.activation_quant(tgt)
+        tgt2 = self.linear1(tgt)
+        tgt2 = self.activation(tgt2)
+        if self.activation_quant is not None:
+            tgt2 = self.activation_quant(tgt2)
+        tgt2 = self.linear2(self.dropout3(tgt2))
         tgt = tgt + self.dropout4(tgt2)
         tgt = self.norm3(tgt)
+        if self.activation_quant is not None:
+            tgt = self.activation_quant(tgt)
         return tgt
 
     @autocast(enabled=False)
@@ -332,6 +366,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 tgt2 = self.self_attn(q, k, tgt, attn_mask=new_self_attn_mask)[0]
                 tgt = tgt + self.dropout2(tgt2)
                 tgt = self.norm2(tgt)
+                if self.activation_quant is not None:
+                    tgt = self.activation_quant(tgt)
                 tgt = tgt[:ori_size]
                 tgt_query_pos = tgt_query_pos[:ori_size]
         else:
@@ -340,6 +376,8 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 tgt2 = self.self_attn(q, k, tgt, attn_mask=self_attn_mask)[0]
                 tgt = tgt + self.dropout2(tgt2)
                 tgt = self.norm2(tgt)
+                if self.activation_quant is not None:
+                    tgt = self.activation_quant(tgt)
 
         # cross attention
         if self.key_aware_type is not None:
@@ -349,12 +387,27 @@ class DeformableTransformerDecoderLayer(nn.Module):
                 tgt = tgt + self.key_aware_proj(memory).mean(0, keepdim=True)
             else:
                 raise NotImplementedError("Unknown key_aware_type: {}".format(self.key_aware_type))
-        tgt2 = self.cross_attn(self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1),
-                               tgt_reference_points.transpose(0, 1).contiguous(),
-                               memory.transpose(0, 1), memory_spatial_shapes, memory_level_start_index,
-                               memory_key_padding_mask).transpose(0, 1)
+        cross_query = self.with_pos_embed(tgt, tgt_query_pos).transpose(0, 1)
+        cross_reference = tgt_reference_points.transpose(0, 1).contiguous()
+        cross_memory = memory.transpose(0, 1)
+        if self.attention_quant is not None:
+            cross_query = self.attention_quant(cross_query)
+            cross_reference = self.attention_quant(cross_reference)
+            cross_memory = self.attention_quant(cross_memory)
+        tgt2 = self.cross_attn(
+            cross_query,
+            cross_reference,
+            cross_memory,
+            memory_spatial_shapes,
+            memory_level_start_index,
+            memory_key_padding_mask,
+        ).transpose(0, 1)
+        if self.attention_quant is not None:
+            tgt2 = self.attention_quant(tgt2)
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
+        if self.activation_quant is not None:
+            tgt = self.activation_quant(tgt)
 
         # ffn
         tgt = self.forward_ffn(tgt)

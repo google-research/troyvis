@@ -24,6 +24,7 @@ from timm.models.layers import trunc_normal_
 from .dino_decoder import TransformerDecoder, DeformableTransformerDecoderLayer
 from ...utils.utils import MLP, gen_encoder_output_proposals, inverse_sigmoid
 from ...utils import box_ops
+from ...quantization import build_quant_config
 import math
 
 TRANSFORMER_DECODER_REGISTRY = Registry("TRANSFORMER_MODULE")
@@ -75,6 +76,7 @@ class MaskDINODecoder(nn.Module):
             dec_layer_share: bool = False,
             semantic_ce_loss: bool = False,
             cross_track_layer: bool = False,
+            quant_cfg = None,
     ):
         """
         NOTE: this interface is experimental.
@@ -226,14 +228,16 @@ class MaskDINODecoder(nn.Module):
         self.decoder_norm = decoder_norm = nn.LayerNorm(hidden_dim)
         decoder_layer = DeformableTransformerDecoderLayer(hidden_dim, dim_feedforward,
                                                           dropout, activation,
-                                                          self.num_feature_levels, nhead, dec_n_points)
+                                                          self.num_feature_levels, nhead, dec_n_points,
+                                                          quant_cfg=quant_cfg)
         self.decoder = TransformerDecoder(decoder_layer, self.num_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec,
                                           d_model=hidden_dim, query_dim=query_dim,
                                           num_feature_levels=self.num_feature_levels,
                                           dec_layer_share=dec_layer_share,
                                           cross_track_layer = cross_track_layer,
-                                          n_levels=self.num_feature_levels, n_heads=nhead, n_points=dec_n_points
+                                          n_levels=self.num_feature_levels, n_heads=nhead, n_points=dec_n_points,
+                                          quant_cfg=quant_cfg,
                                           )
         self.cross_track_layer = cross_track_layer
         self.hidden_dim = hidden_dim
@@ -272,6 +276,7 @@ class MaskDINODecoder(nn.Module):
         ret["total_num_feature_levels"] = cfg.MODEL.SEM_SEG_HEAD.TOTAL_NUM_FEATURE_LEVELS
         ret["semantic_ce_loss"] = cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and ~cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON
         ret["cross_track_layer"] = cfg.MODEL.CROSS_TRACK
+        ret["quant_cfg"] = build_quant_config(cfg)
         return ret
 
     def prepare_for_dn(self, targets, tgt, refpoint_emb, batch_size,task):
@@ -724,6 +729,7 @@ class MaskDINODecoderNew(nn.Module):
             dec_layer_share: bool = False,
             semantic_ce_loss: bool = False,
             cross_track_layer: bool = False,
+            quant_cfg = None,
             cfg=None
     ):
         """
@@ -879,14 +885,16 @@ class MaskDINODecoderNew(nn.Module):
         self.decoder_norm = decoder_norm = nn.LayerNorm(hidden_dim)
         decoder_layer = DeformableTransformerDecoderLayer(hidden_dim, dim_feedforward,
                                                           dropout, activation,
-                                                          self.num_feature_levels, nhead, dec_n_points)
+                                                          self.num_feature_levels, nhead, dec_n_points,
+                                                          quant_cfg=quant_cfg)
         self.decoder = TransformerDecoder(decoder_layer, self.num_layers, decoder_norm,
                                           return_intermediate=return_intermediate_dec,
                                           d_model=hidden_dim, query_dim=query_dim,
                                           num_feature_levels=self.num_feature_levels,
                                           dec_layer_share=dec_layer_share,
                                           cross_track_layer = cross_track_layer,
-                                          n_levels=self.num_feature_levels, n_heads=nhead, n_points=dec_n_points
+                                          n_levels=self.num_feature_levels, n_heads=nhead, n_points=dec_n_points,
+                                          quant_cfg=quant_cfg,
                                           )
         self.cross_track_layer = cross_track_layer
         self.hidden_dim = hidden_dim
@@ -925,6 +933,7 @@ class MaskDINODecoderNew(nn.Module):
         ret["total_num_feature_levels"] = cfg.MODEL.SEM_SEG_HEAD.TOTAL_NUM_FEATURE_LEVELS
         ret["semantic_ce_loss"] = cfg.MODEL.MaskDINO.TEST.SEMANTIC_ON and cfg.MODEL.MaskDINO.SEMANTIC_CE_LOSS and ~cfg.MODEL.MaskDINO.TEST.PANOPTIC_ON
         ret["cross_track_layer"] = cfg.MODEL.CROSS_TRACK
+        ret["quant_cfg"] = build_quant_config(cfg)
         ret["cfg"] = cfg
         return ret
 

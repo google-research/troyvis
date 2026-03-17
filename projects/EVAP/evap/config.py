@@ -34,6 +34,19 @@ def add_evap_config(cfg):
     cfg.MODEL.REUSE_KERNEL = False # whether to reuse kernels for saving the computations of the decoder
     cfg.MODEL.REUSE_KERNEL_CLIP_LENGTH = 3 # clip length for kernel reuse
 
+    cfg.MODEL.QUANT = CN()
+    cfg.MODEL.QUANT.ENABLED = False
+    cfg.MODEL.QUANT.W_BITS = 4
+    cfg.MODEL.QUANT.A_BITS = 4
+    cfg.MODEL.QUANT.ATTN_BITS = 8
+    cfg.MODEL.QUANT.SKIP_TEXT_ENCODER = True
+    cfg.MODEL.QUANT.SKIP_FIRST_LAST = True
+    cfg.MODEL.QUANT.W_GRANULARITY = "per_channel"
+    cfg.MODEL.QUANT.A_GRANULARITY = "per_tensor"
+    cfg.MODEL.QUANT.ATTN_GRANULARITY = "per_head"
+    cfg.MODEL.QUANT.LEARNABLE_SCALE = True
+    cfg.MODEL.QUANT.DEBUG_PRINT = False
+
     cfg.MODEL.DYHEAD = CN()
     cfg.MODEL.DYHEAD.PRIOR_PROB = 0.01
     cfg.MODEL.DYHEAD.LOG_SCALE = 0.0
