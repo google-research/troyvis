@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from typing import Dict, Iterable, Optional, Sequence, Set, Tuple
 
 import torch
 import torch.nn.functional as F
 from torch import nn
+
+try:
+    from detectron2.layers import Conv2d as D2Conv2d
+except Exception:  # pragma: no cover - detectron2 may be unavailable in lightweight checks
+    D2Conv2d = None
 
 
 @dataclass(frozen=True)
@@ -46,6 +52,11 @@ def _round_ste(x: torch.Tensor) -> torch.Tensor:
     return x + (torch.round(x) - x).detach()
 
 
+def _inv_softplus(value: float) -> float:
+    value_tensor = torch.tensor(float(value))
+    return torch.log(torch.expm1(value_tensor)).item()
+
+
 class FakeQuantizer(nn.Module):
     """
     Generic fake quantizer with STE. `per_head` is treated as a per-channel
@@ -71,9 +82,15 @@ class FakeQuantizer(nn.Module):
         self.enabled = enabled and bits is not None and bits < 32
         self.eps = eps
         if self.enabled and learnable_scale:
-            self.scale_factor = nn.Parameter(torch.zeros(1))
+            self.scale_factor = nn.Parameter(torch.full((1,), _inv_softplus(1.0)))
         else:
             self.register_parameter("scale_factor", None)
+        self.collect_stats = False
+        self.use_calibrated_stats = False
+        self.register_buffer("calib_scale", torch.ones(1))
+        self.register_buffer("calib_zero_point", torch.zeros(1))
+        self.register_buffer("calib_batches", torch.zeros((), dtype=torch.long))
+        self.register_buffer("calib_ready", torch.zeros((), dtype=torch.bool))
 
     def _positive_scale_factor(self, dtype: torch.dtype, device: torch.device):
         if self.scale_factor is None:
@@ -97,6 +114,38 @@ class FakeQuantizer(nn.Module):
             return scale
         return scale * scale_factor
 
+    def begin_calibration(self, reset: bool = True) -> None:
+        self.collect_stats = True
+        self.use_calibrated_stats = False
+        if reset:
+            self.calib_batches.zero_()
+            self.calib_ready.zero_()
+
+    def end_calibration(self, use_calibrated_stats: bool = True) -> None:
+        self.collect_stats = False
+        self.use_calibrated_stats = use_calibrated_stats and bool(self.calib_ready.item())
+
+    def _update_calibration(self, scale: torch.Tensor, zero_point: Optional[torch.Tensor]) -> None:
+        if not self.collect_stats:
+            return
+
+        scale_detached = scale.detach()
+        zero_point_detached = None if zero_point is None else zero_point.detach()
+        if not bool(self.calib_ready.item()) or self.calib_scale.shape != scale_detached.shape:
+            self.calib_scale = scale_detached.clone()
+            if zero_point_detached is not None:
+                self.calib_zero_point = zero_point_detached.clone()
+            self.calib_batches.fill_(1)
+            self.calib_ready.fill_(True)
+            return
+
+        next_count = int(self.calib_batches.item()) + 1
+        mix = 1.0 / next_count
+        self.calib_scale = self.calib_scale.to(scale_detached) * (1.0 - mix) + scale_detached * mix
+        if zero_point_detached is not None:
+            self.calib_zero_point = self.calib_zero_point.to(zero_point_detached) * (1.0 - mix) + zero_point_detached * mix
+        self.calib_batches.fill_(next_count)
+
     def forward(self, x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
         if x is None or not self.enabled or not torch.is_floating_point(x):
             return x
@@ -113,6 +162,9 @@ class FakeQuantizer(nn.Module):
             else:
                 max_val = work_x.abs()
             scale = torch.clamp(max_val / max(qmax, 1), min=self.eps)
+            self._update_calibration(scale, None)
+            if self.use_calibrated_stats and bool(self.calib_ready.item()):
+                scale = self.calib_scale.to(dtype=work_x.dtype, device=work_x.device)
             scale = self._apply_learnable_scale(scale)
             q = _round_ste(work_x / scale).clamp(qmin, qmax)
             dq = q * scale
@@ -126,8 +178,12 @@ class FakeQuantizer(nn.Module):
                 x_min = work_x
                 x_max = work_x
             scale = torch.clamp((x_max - x_min) / max(qmax - qmin, 1), min=self.eps)
-            scale = self._apply_learnable_scale(scale)
             zero_point = _round_ste(qmin - x_min / scale).clamp(qmin, qmax)
+            self._update_calibration(scale, zero_point)
+            if self.use_calibrated_stats and bool(self.calib_ready.item()):
+                scale = self.calib_scale.to(dtype=work_x.dtype, device=work_x.device)
+                zero_point = self.calib_zero_point.to(dtype=work_x.dtype, device=work_x.device)
+            scale = self._apply_learnable_scale(scale)
             q = _round_ste(work_x / scale + zero_point).clamp(qmin, qmax)
             dq = (q - zero_point) * scale
 
@@ -212,15 +268,12 @@ class QuantConv2d(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.input_quant is not None:
             x = self.input_quant(x)
-        y = F.conv2d(
-            x,
-            self.weight_quant(self.module.weight),
-            self.module.bias,
-            self.module.stride,
-            self.module.padding,
-            self.module.dilation,
-            self.module.groups,
-        )
+        if D2Conv2d is not None and isinstance(self.module, D2Conv2d):
+            if not torch.jit.is_scripting() and x.numel() == 0 and self.module.training:
+                assert not isinstance(
+                    getattr(self.module, "norm", None), nn.SyncBatchNorm
+                ), "SyncBatchNorm does not support empty inputs in Detectron2 Conv2d."
+        y = self.module._conv_forward(x, self.weight_quant(self.module.weight), self.module.bias)
         norm = getattr(self.module, "norm", None)
         if norm is not None:
             y = norm(y)
@@ -384,8 +437,46 @@ def build_predictor_skip_names(module: Optional[nn.Module]) -> Set[str]:
     return skip_names
 
 
+def build_backbone_skip_names(module: Optional[nn.Module]) -> Set[str]:
+    if module is None:
+        return set()
+
+    quantizable_names = list(_collect_quantizable_names(module))
+    if not quantizable_names:
+        return set()
+
+    preferred_prefixes = (
+        "input_stem.op_list.0.conv",
+        "input_stem.0.conv",
+        "stem.conv1",
+        "stem.0",
+        "conv1",
+        "patch_embed.proj",
+        "patch_embed",
+    )
+    for prefix in preferred_prefixes:
+        for name in quantizable_names:
+            if name == prefix or name.startswith(prefix + "."):
+                return {name}
+    return {quantizable_names[0]}
+
+
 def _is_quantizable_module(module: nn.Module) -> bool:
+    if D2Conv2d is not None and isinstance(module, D2Conv2d):
+        return True
     return isinstance(module, (nn.Conv2d, nn.Linear, nn.MultiheadAttention))
+
+
+def _module_type_label(module: nn.Module) -> str:
+    if D2Conv2d is not None and isinstance(module, D2Conv2d):
+        return "detectron2.Conv2d"
+    if isinstance(module, nn.Conv2d):
+        return "nn.Conv2d"
+    if isinstance(module, nn.Linear):
+        return "nn.Linear"
+    if isinstance(module, nn.MultiheadAttention):
+        return "nn.MultiheadAttention"
+    return type(module).__name__
 
 
 def _collect_quantizable_names(module: nn.Module) -> Sequence[str]:
@@ -413,21 +504,24 @@ def prepare_module_for_qat(
     quant_cfg: QuantConfig,
     module_name: str,
     explicit_skip: Optional[Iterable[str]] = None,
+    skip_prefixes: Optional[Iterable[str]] = None,
 ) -> Dict[str, Sequence[str]]:
     if module is None:
-        return {"scope": module_name, "wrapped": [], "skipped": []}
+        return {"scope": module_name, "wrapped": [], "skipped": [], "skip_prefixes": [], "wrapped_type_counts": {}}
     if not quant_cfg.enabled:
-        return {"scope": module_name, "wrapped": [], "skipped": []}
+        return {"scope": module_name, "wrapped": [], "skipped": [], "skip_prefixes": [], "wrapped_type_counts": {}}
 
     quantizable_names = list(_collect_quantizable_names(module))
     skip_names: Set[str] = set(explicit_skip or [])
+    prefix_skips: Set[str] = set(skip_prefixes or [])
     if quant_cfg.skip_first_last and quantizable_names:
         if module_name == "backbone":
-            skip_names.add(quantizable_names[0])
+            skip_names.update(build_backbone_skip_names(module))
         elif module_name == "predictor" and not explicit_skip:
             skip_names.add(quantizable_names[-1])
 
     wrapped = []
+    type_counts: Counter = Counter()
     seen: Dict[int, nn.Module] = {}
 
     def recurse(parent: nn.Module, prefix: str = "") -> None:
@@ -435,6 +529,9 @@ def prepare_module_for_qat(
             return
         for child_name, child in list(parent.named_children()):
             full_name = f"{prefix}.{child_name}" if prefix else child_name
+            if any(full_name == item or full_name.startswith(f"{item}.") for item in prefix_skips):
+                seen[id(child)] = child
+                continue
             if id(child) in seen:
                 setattr(parent, child_name, seen[id(child)])
                 continue
@@ -445,6 +542,7 @@ def prepare_module_for_qat(
                 seen[id(child)] = new_child
                 child = new_child
                 wrapped.append(full_name)
+                type_counts[_module_type_label(new_child.module)] += 1
             else:
                 seen[id(child)] = child
 
@@ -452,12 +550,71 @@ def prepare_module_for_qat(
 
     recurse(module)
 
-    summary = {"scope": module_name, "wrapped": wrapped, "skipped": sorted(skip_names)}
+    summary = {
+        "scope": module_name,
+        "wrapped": wrapped,
+        "skipped": sorted(skip_names),
+        "skip_prefixes": sorted(prefix_skips),
+        "wrapped_type_counts": dict(type_counts),
+    }
     if quant_cfg.debug_print:
         print(
             f"[QAT] {module_name}: wrapped={len(summary['wrapped'])}, "
-            f"skipped={len(summary['skipped'])}"
+            f"skipped={len(summary['skipped'])}, type_counts={summary['wrapped_type_counts']}"
         )
         if summary["skipped"]:
             print(f"[QAT] {module_name} skipped modules: {summary['skipped']}")
+        if summary["skip_prefixes"]:
+            print(f"[QAT] {module_name} skipped subtrees: {summary['skip_prefixes']}")
     return summary
+
+
+def iter_fake_quantizers(module: Optional[nn.Module]):
+    if module is None:
+        return
+    for child in module.modules():
+        if isinstance(child, FakeQuantizer):
+            yield child
+
+
+def summarize_quantization_summaries(summaries: Dict[str, Dict[str, Sequence[str]]]) -> Dict[str, Dict[str, int]]:
+    type_counts: Counter = Counter()
+    for summary in summaries.values():
+        type_counts.update(summary.get("wrapped_type_counts", {}))
+    return {"wrapped_type_counts": dict(type_counts)}
+
+
+@torch.no_grad()
+def initialize_fake_quantizers(
+    model: nn.Module,
+    representative_batches,
+    forward_step,
+    *,
+    num_batches: int = 1,
+    use_calibrated_stats: bool = True,
+) -> Dict[str, int]:
+    quantizers = list(iter_fake_quantizers(model))
+    if not quantizers:
+        return {"num_quantizers": 0, "num_batches": 0}
+    if num_batches <= 0:
+        return {"num_quantizers": len(quantizers), "num_batches": 0}
+
+    was_training = model.training
+    model.eval()
+    try:
+        for quantizer in quantizers:
+            quantizer.begin_calibration(reset=True)
+
+        num_seen = 0
+        for batch in representative_batches:
+            forward_step(model, batch)
+            num_seen += 1
+            if num_seen >= num_batches:
+                break
+    finally:
+        for quantizer in quantizers:
+            quantizer.end_calibration(use_calibrated_stats=use_calibrated_stats)
+        if was_training:
+            model.train()
+
+    return {"num_quantizers": len(quantizers), "num_batches": num_seen}

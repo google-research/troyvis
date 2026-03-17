@@ -35,10 +35,12 @@ import time
 from .eva_clip import create_model, get_tokenizer
 import copy
 from ..quantization import (
-    build_predictor_skip_names,
     build_quant_config,
     has_quant_wrappers,
+    initialize_fake_quantizers,
     prepare_module_for_qat,
+    summarize_quantization_summaries,
+    build_predictor_skip_names,
 )
 
 
@@ -162,11 +164,19 @@ class EVAP_Model(nn.Module):
                 self.quant_cfg,
                 "predictor",
                 explicit_skip=build_predictor_skip_names(self.predictor),
+                skip_prefixes={"lang_encoder"},
             )
+            self.quantization_summary["overall"] = summarize_quantization_summaries(self.quantization_summary)
             if self.quant_cfg.skip_text_encoder and hasattr(self, "text_encoder"):
                 assert not has_quant_wrappers(self.text_encoder), "Text encoder should remain FP32 when quantization skip is enabled."
             if self.quant_cfg.skip_text_encoder and hasattr(self, "text_encoder_teacher"):
                 assert not has_quant_wrappers(self.text_encoder_teacher), "Teacher text encoder should remain FP32 when quantization skip is enabled."
+            if self.quant_cfg.skip_text_encoder and getattr(self, "lang_encoder", None) is not None:
+                assert not has_quant_wrappers(self.lang_encoder), "lang_encoder should remain FP32 when quantization skip is enabled."
+            if self.quant_cfg.skip_text_encoder and getattr(self.predictor, "lang_encoder", None) is not None:
+                assert not has_quant_wrappers(self.predictor.lang_encoder), "Predictor lang_encoder should remain FP32 when quantization skip is enabled."
+            if self.quant_cfg.debug_print:
+                print(f"[QAT] overall type counts: {self.quantization_summary['overall']['wrapped_type_counts']}")
         self.to(device)
         
         self.video_info = video_info
@@ -196,6 +206,15 @@ class EVAP_Model(nn.Module):
     @property
     def device(self):
         return self.pixel_mean.device
+
+    def initialize_quantizers(self, representative_batches, forward_step, num_batches=1, use_calibrated_stats=True):
+        return initialize_fake_quantizers(
+            self,
+            representative_batches,
+            forward_step,
+            num_batches=num_batches,
+            use_calibrated_stats=use_calibrated_stats,
+        )
     
     def forward(self, images, prompts, task, targets=None, batch_name_list=None, is_train = True, visual_prompt_type='scribble', mask_kernels=None):
         extra =  {}

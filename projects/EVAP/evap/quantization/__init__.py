@@ -5,12 +5,16 @@ from .qat import (
     QuantLinear,
     QuantMultiheadAttention,
     build_activation_quantizer,
+    build_backbone_skip_names,
     build_predictor_skip_names,
     build_attention_quantizer,
     build_quant_config,
     build_weight_quantizer,
     has_quant_wrappers,
+    initialize_fake_quantizers,
+    iter_fake_quantizers,
     prepare_module_for_qat,
+    summarize_quantization_summaries,
 )
 
 __all__ = [
@@ -20,10 +24,14 @@ __all__ = [
     "QuantLinear",
     "QuantMultiheadAttention",
     "build_activation_quantizer",
+    "build_backbone_skip_names",
     "build_predictor_skip_names",
     "build_attention_quantizer",
     "build_quant_config",
     "build_weight_quantizer",
     "has_quant_wrappers",
+    "initialize_fake_quantizers",
+    "iter_fake_quantizers",
     "prepare_module_for_qat",
+    "summarize_quantization_summaries",
 ]
