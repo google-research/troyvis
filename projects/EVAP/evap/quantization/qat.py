@@ -69,6 +69,7 @@ class FakeQuantizer(nn.Module):
         *,
         symmetric: bool,
         granularity: str,
+        quantizer_kind: str,
         channel_axis: int = 0,
         enabled: bool = True,
         learnable_scale: bool = False,
@@ -78,6 +79,7 @@ class FakeQuantizer(nn.Module):
         self.bits = bits
         self.symmetric = symmetric
         self.granularity = granularity
+        self.quantizer_kind = quantizer_kind
         self.channel_axis = channel_axis
         self.enabled = enabled and bits is not None and bits < 32
         self.eps = eps
@@ -91,6 +93,12 @@ class FakeQuantizer(nn.Module):
         self.register_buffer("calib_zero_point", torch.zeros(1))
         self.register_buffer("calib_batches", torch.zeros((), dtype=torch.long))
         self.register_buffer("calib_ready", torch.zeros((), dtype=torch.bool))
+
+    @property
+    def allows_calibrated_stats(self) -> bool:
+        # Keep weight quantizers dynamic during QAT. Calibration is only meant
+        # to initialize activation-style quantizers from representative batches.
+        return self.quantizer_kind in {"activation", "attention"}
 
     def _positive_scale_factor(self, dtype: torch.dtype, device: torch.device):
         if self.scale_factor is None:
@@ -196,6 +204,7 @@ def build_weight_quantizer(quant_cfg: QuantConfig, channel_axis: int = 0) -> Fak
         quant_cfg.w_bits,
         symmetric=True,
         granularity=quant_cfg.w_granularity,
+        quantizer_kind="weight",
         channel_axis=channel_axis,
         enabled=quant_cfg.enabled,
         learnable_scale=quant_cfg.learnable_scale,
@@ -209,6 +218,7 @@ def build_activation_quantizer(quant_cfg: Optional[QuantConfig], channel_axis: i
         quant_cfg.a_bits,
         symmetric=False,
         granularity=quant_cfg.a_granularity,
+        quantizer_kind="activation",
         channel_axis=channel_axis,
         enabled=quant_cfg.enabled,
         learnable_scale=quant_cfg.learnable_scale,
@@ -223,6 +233,7 @@ def build_attention_quantizer(quant_cfg: Optional[QuantConfig], channel_axis: in
         quant_cfg.attn_bits,
         symmetric=False,
         granularity=granularity,
+        quantizer_kind="attention",
         channel_axis=channel_axis,
         enabled=quant_cfg.enabled,
         learnable_scale=quant_cfg.learnable_scale,
@@ -595,14 +606,26 @@ def initialize_fake_quantizers(
 ) -> Dict[str, int]:
     quantizers = list(iter_fake_quantizers(model))
     if not quantizers:
-        return {"num_quantizers": 0, "num_batches": 0}
+        return {
+            "num_quantizers": 0,
+            "num_calibrated_quantizers": 0,
+            "num_weight_quantizers_skipped": 0,
+            "num_batches": 0,
+        }
+    calibratable_quantizers = [quantizer for quantizer in quantizers if quantizer.allows_calibrated_stats]
+    skipped_weight_quantizers = [quantizer for quantizer in quantizers if quantizer.quantizer_kind == "weight"]
     if num_batches <= 0:
-        return {"num_quantizers": len(quantizers), "num_batches": 0}
+        return {
+            "num_quantizers": len(quantizers),
+            "num_calibrated_quantizers": len(calibratable_quantizers),
+            "num_weight_quantizers_skipped": len(skipped_weight_quantizers),
+            "num_batches": 0,
+        }
 
     was_training = model.training
     model.eval()
     try:
-        for quantizer in quantizers:
+        for quantizer in calibratable_quantizers:
             quantizer.begin_calibration(reset=True)
 
         num_seen = 0
@@ -612,9 +635,14 @@ def initialize_fake_quantizers(
             if num_seen >= num_batches:
                 break
     finally:
-        for quantizer in quantizers:
+        for quantizer in calibratable_quantizers:
             quantizer.end_calibration(use_calibrated_stats=use_calibrated_stats)
         if was_training:
             model.train()
 
-    return {"num_quantizers": len(quantizers), "num_batches": num_seen}
+    return {
+        "num_quantizers": len(quantizers),
+        "num_calibrated_quantizers": len(calibratable_quantizers),
+        "num_weight_quantizers_skipped": len(skipped_weight_quantizers),
+        "num_batches": num_seen,
+    }
