@@ -35,7 +35,7 @@ def add_evap_config(cfg):
     cfg.MODEL.REUSE_KERNEL_CLIP_LENGTH = 3 # clip length for kernel reuse
 
     cfg.MODEL.QUANT = CN()
-    cfg.MODEL.QUANT.ENABLED = False
+    cfg.MODEL.QUANT.ENABLED = True
     cfg.MODEL.QUANT.W_BITS = 4
     cfg.MODEL.QUANT.A_BITS = 4
     cfg.MODEL.QUANT.ATTN_BITS = 8
@@ -45,7 +45,7 @@ def add_evap_config(cfg):
     cfg.MODEL.QUANT.A_GRANULARITY = "per_tensor"
     cfg.MODEL.QUANT.ATTN_GRANULARITY = "per_head"
     cfg.MODEL.QUANT.LEARNABLE_SCALE = True
-    cfg.MODEL.QUANT.DEBUG_PRINT = False
+    cfg.MODEL.QUANT.DEBUG_PRINT = True
 
     cfg.MODEL.DYHEAD = CN()
     cfg.MODEL.DYHEAD.PRIOR_PROB = 0.01
